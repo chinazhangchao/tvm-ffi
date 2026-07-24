@@ -798,9 +798,17 @@ def main() -> None:  # noqa: PLR0912, PLR0915
     if not output_dir.exists():
         output_dir.mkdir(parents=True, exist_ok=True)
 
+    print(f"[build] torch version: {torch.__version__}", file=sys.stderr, flush=True)
+    print(f"[build] sys.executable: {sys.executable}", file=sys.stderr, flush=True)
+    print(f"[build] sys.base_exec_prefix: {sys.base_exec_prefix}", file=sys.stderr, flush=True)
+    print(f"[build] IS_WINDOWS: {IS_WINDOWS}, IS_DARWIN: {IS_DARWIN}", file=sys.stderr, flush=True)
+    print(f"[build] libname: {libname}, output_dir: {output_dir}", file=sys.stderr, flush=True)
+    print(f"[build] build_dir: {build_dir}", file=sys.stderr, flush=True)
+
     with FileLock(str(output_dir / (libname + ".lock"))):
         if (output_dir / libname).exists():
             # already built
+            print(f"[build] Library already exists at {output_dir / libname}, skipping.", file=sys.stderr, flush=True)
             return
 
         # write the source
@@ -847,7 +855,8 @@ def main() -> None:  # noqa: PLR0912, PLR0915
 
         # Add Python library linking
         if IS_WINDOWS:
-            python_lib = f"python{sys.version_info.major}.lib"
+            python_lib = f"python{sys.version_info.major}{sys.version_info.minor}.lib"
+            python_lib_fallback = f"python{sys.version_info.major}.lib"
             python_libdir_list = [
                 sysconfig.get_config_var("LIBDIR"),
                 str(Path(sys.base_exec_prefix) / "libs"),
@@ -859,10 +868,23 @@ def main() -> None:  # noqa: PLR0912, PLR0915
                 python_libdir_list.append(
                     str((Path(sysconfig.get_path("include")).parent / "libs").resolve())
                 )
+            print(f"[build] Searching for Python lib. Names tried: {python_lib!r}, {python_lib_fallback!r}", file=sys.stderr, flush=True)
+            print(f"[build] Python libdir candidates: {python_libdir_list}", file=sys.stderr, flush=True)
+            python_lib_found = False
             for python_libdir in python_libdir_list:
-                if python_libdir and (Path(python_libdir) / python_lib).exists():
-                    ldflags.append(f"/LIBPATH:{python_libdir.replace(':', '$:')}")
+                if python_libdir:
+                    for plib in (python_lib, python_lib_fallback):
+                        candidate = Path(python_libdir) / plib
+                        print(f"[build]   checking {candidate} -> exists={candidate.exists()}", file=sys.stderr, flush=True)
+                        if candidate.exists():
+                            ldflags.append(f"/LIBPATH:{python_libdir}")
+                            print(f"[build]   -> found, added /LIBPATH:{python_libdir}", file=sys.stderr, flush=True)
+                            python_lib_found = True
+                            break
+                if python_lib_found:
                     break
+            if not python_lib_found:
+                print("[build] WARNING: Python lib not found in any candidate directory!", file=sys.stderr, flush=True)
 
         if IS_DARWIN:
             python_libdir = sysconfig.get_config_var("LIBDIR")
@@ -879,6 +901,10 @@ def main() -> None:  # noqa: PLR0912, PLR0915
         if env_cflags:
             cflags.extend(env_cflags)
 
+        print(f"[build] include_paths: {include_paths}", file=sys.stderr, flush=True)
+        print(f"[build] cflags: {cflags}", file=sys.stderr, flush=True)
+        print(f"[build] ldflags: {ldflags}", file=sys.stderr, flush=True)
+
         # build the shared library
         if IS_WINDOWS:
             # Use ninja on Windows
@@ -890,6 +916,8 @@ def main() -> None:  # noqa: PLR0912, PLR0915
                 extra_ldflags=ldflags,
                 extra_include_paths=include_paths,
             )
+            ninja_content = (build_dir / "build.ninja").read_text(encoding="utf-8")
+            print(f"[build] Generated build.ninja:\n{ninja_content}", file=sys.stderr, flush=True)
             from tvm_ffi.cpp.extension import build_ninja  # noqa: PLC0415
 
             build_ninja(build_dir=str(build_dir))
@@ -905,6 +933,7 @@ def main() -> None:  # noqa: PLR0912, PLR0915
             )
 
         # rename the tmp file to final libname
+        print(f"[build] Moving {build_dir / tmp_libname} -> {output_dir / libname}", file=sys.stderr, flush=True)
         shutil.move(str(build_dir / tmp_libname), str(output_dir / libname))
 
 
